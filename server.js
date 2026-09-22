@@ -5,20 +5,12 @@ const path = require("path");
 
 dotenv.config();
 
-const connectDB =
-  require("./config/db");
+const connectDB = require("./config/db");
 
-const courseRoutes =
-  require("./routes/courseRoutes");
-
-const newsRoutes =
-  require("./routes/newsRoutes");
-
-const contactRoutes =
-  require("./routes/contactRoutes");
-
-const googleReviewRoutes =
-  require("./routes/googleReviewRoutes");
+const courseRoutes = require("./routes/courseRoutes");
+const newsRoutes = require("./routes/newsRoutes");
+const contactRoutes = require("./routes/contactRoutes");
+const googleReviewRoutes = require("./routes/googleReviewRoutes");
 
 const app = express();
 
@@ -27,79 +19,62 @@ const app = express();
 ========================================================= */
 
 const PORT = Number(
-  process.env.API_PORT ||
-  process.env.PORT ||
-  5000
+    process.env.PORT ||
+    process.env.API_PORT ||
+    5000
 );
 
-const allowedOrigins = String(
-  process.env.CLIENT_ORIGIN ||
-  process.env.FRONTEND_URL ||
-  "http://localhost:5173,http://localhost:5174"
-)
-  .split(",")
-  .map((value) =>
-    value.trim()
-  )
-  .filter(Boolean);
+const CLIENT_ORIGIN =
+    process.env.CLIENT_ORIGIN ||
+    process.env.FRONTEND_URL ||
+    "http://localhost:5173";
 
 /* =========================================================
    CORS
 ========================================================= */
 
+const allowedOrigins = CLIENT_ORIGIN
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
 app.use(
-  cors({
-    origin(
-      origin,
-      callback
-    ) {
-      /*
-       * Browser request without Origin:
-       * Postman / direct server request
-       */
-      if (!origin) {
-        return callback(
-          null,
-          true
-        );
-      }
+    cors({
+        origin(origin, callback) {
+            if (!origin) {
+                return callback(null, true);
+            }
 
-      /*
-       * Local development
-       */
-      if (
-        process.env.NODE_ENV !==
-        "production"
-      ) {
-        return callback(
-          null,
-          true
-        );
-      }
+            if (allowedOrigins.includes(origin)) {
+                return callback(null, true);
+            }
 
-      /*
-       * Production
-       */
-      if (
-        allowedOrigins.includes(
-          origin
-        )
-      ) {
-        return callback(
-          null,
-          true
-        );
-      }
+            /*
+             * Allow local development origins.
+             */
+            if (
+                origin.includes("localhost") ||
+                origin.includes("127.0.0.1")
+            ) {
+                return callback(null, true);
+            }
 
-      return callback(
-        new Error(
-          "CORS origin not allowed."
-        )
-      );
-    },
+            /*
+             * Allow Vercel frontend.
+             */
+            if (origin.endsWith(".vercel.app")) {
+                return callback(null, true);
+            }
 
-    credentials: true,
-  })
+            return callback(
+                new Error(
+                    `CORS blocked origin: ${origin}`
+                )
+            );
+        },
+
+        credentials: true,
+    })
 );
 
 /* =========================================================
@@ -107,18 +82,16 @@ app.use(
 ========================================================= */
 
 app.use(
-  express.json({
-    limit:
-      process.env.API_JSON_LIMIT ||
-      "12mb",
-  })
+    express.json({
+        limit: "20mb",
+    })
 );
 
 app.use(
-  express.urlencoded({
-    extended: true,
-    limit: "12mb",
-  })
+    express.urlencoded({
+        extended: true,
+        limit: "20mb",
+    })
 );
 
 /* =========================================================
@@ -126,208 +99,147 @@ app.use(
 ========================================================= */
 
 app.use(
-  "/uploads",
-  express.static(
-    path.join(
-      __dirname,
-      "uploads"
-    ),
-    {
-      maxAge: "1d",
-    }
-  )
-);
-
-/* =========================================================
-   ROOT
-========================================================= */
-
-app.get(
-  "/",
-  (_req, res) => {
-    res.status(200).json({
-      success: true,
-      message:
-        "Projenius backend is running",
-    });
-  }
+    "/uploads",
+    express.static(
+        path.join(__dirname, "uploads")
+    )
 );
 
 /* =========================================================
    HEALTH
 ========================================================= */
 
-app.get(
-  "/api/health",
-  (_req, res) => {
+app.get("/", (_req, res) => {
     res.status(200).json({
-      success: true,
-      message:
-        "Projenius API is healthy",
+        success: true,
+        message: "Projenius backend is running",
     });
-  }
-);
+});
+
+app.get("/api/health", (_req, res) => {
+    res.status(200).json({
+        success: true,
+        message: "Projenius API is healthy",
+    });
+});
 
 /* =========================================================
    API ROUTES
 ========================================================= */
 
-/* ---------------- Courses ---------------- */
-
 app.use(
-  "/api/courses",
-  courseRoutes
+    "/api/courses",
+    courseRoutes
 );
 
-/* ---------------- News ---------------- */
-
 app.use(
-  "/api/news",
-  newsRoutes
+    "/api/news",
+    newsRoutes
 );
 
-/* ---------------- Contact ---------------- */
-
 app.use(
-  "/api",
-  contactRoutes
+    "/api",
+    contactRoutes
 );
 
-/* ---------------- Google Reviews ---------------- */
-
 app.use(
-  "/api/reviews",
-  googleReviewRoutes
+    "/api/reviews",
+    googleReviewRoutes
 );
 
 /* =========================================================
    404
 ========================================================= */
 
-app.use(
-  (req, res) => {
+app.use((req, res) => {
     res.status(404).json({
-      success: false,
-      message:
-        "Route not found",
-      path: req.originalUrl,
-      method: req.method,
+        success: false,
+        message: "Route not found",
+        path: req.originalUrl,
+        method: req.method,
     });
-  }
-);
+});
 
 /* =========================================================
-   GLOBAL ERROR
+   ERROR HANDLER
 ========================================================= */
 
 app.use(
-  (
-    error,
-    _req,
-    res,
-    _next
-  ) => {
-    console.error(
-      "========================================"
-    );
+    (
+        err,
+        _req,
+        res,
+        _next
+    ) => {
+        console.error(
+            "Backend Error:",
+            err?.stack || err?.message || err
+        );
 
-    console.error(
-      "Backend Error:"
-    );
-
-    console.error(
-      error?.stack ||
-        error?.message ||
-        error
-    );
-
-    console.error(
-      "========================================"
-    );
-
-    res.status(
-      error?.status || 500
-    ).json({
-      success: false,
-      message:
-        error?.message ||
-        "Internal server error",
-    });
-  }
+        res.status(
+            err?.status || 500
+        ).json({
+            success: false,
+            message:
+                err?.message ||
+                "Internal server error",
+        });
+    }
 );
 
 /* =========================================================
-   START DATABASE + SERVER
+   START
 ========================================================= */
 
 async function startServer() {
-  try {
-    await connectDB();
-
-    console.log(
-      "MongoDB connected successfully."
-    );
-
-    app.listen(
-      PORT,
-      () => {
-        console.log(
-          "========================================"
-        );
+    try {
+        await connectDB();
 
         console.log(
-          "Projenius Backend Started"
+            "MongoDB connected successfully"
         );
 
-        console.log(
-          `Server: http://localhost:${PORT}`
+        app.listen(PORT, "0.0.0.0", () => {
+            console.log(
+                "========================================"
+            );
+
+            console.log(
+                "Projenius Backend Started"
+            );
+
+            console.log(
+                `Server running on port ${PORT}`
+            );
+
+            console.log(
+                `Health: /api/health`
+            );
+
+            console.log(
+                `Courses: /api/courses`
+            );
+
+            console.log(
+                `News: /api/news`
+            );
+
+            console.log(
+                `Reviews: /api/reviews`
+            );
+
+            console.log(
+                "========================================"
+            );
+        });
+    } catch (error) {
+        console.error(
+            "Backend startup failed:",
+            error
         );
 
-        console.log(
-          `Health: http://localhost:${PORT}/api/health`
-        );
-
-        console.log(
-          `Courses: http://localhost:${PORT}/api/courses`
-        );
-
-        console.log(
-          `News: http://localhost:${PORT}/api/news`
-        );
-
-        console.log(
-          `Reviews: http://localhost:${PORT}/api/reviews`
-        );
-
-        console.log(
-          "========================================"
-        );
-      }
-    );
-  } catch (error) {
-    console.error(
-      "========================================"
-    );
-
-    console.error(
-      "Unable to start ProJenius backend."
-    );
-
-    console.error(
-      error?.message ||
-        error
-    );
-
-    console.error(
-      "Check MONGO_URI and MongoDB Atlas access."
-    );
-
-    console.error(
-      "========================================"
-    );
-
-    process.exit(1);
-  }
+        process.exit(1);
+    }
 }
 
 startServer();
