@@ -1,111 +1,201 @@
-const News = require("../models/News");
+const mongoose = require("mongoose");
+const Blog = require("../models/Blog");
 
-// GET all news
+/* =========================================================
+   PUBLIC QUERY
+========================================================= */
+
+const publicQuery = {
+  status: "published",
+
+  /*
+   * true OR missing field is allowed.
+   * false stays hidden.
+   */
+  publicVisibility: {
+    $ne: false,
+  },
+};
+
+/* =========================================================
+   PAGINATION
+========================================================= */
+
+function getPagination(query) {
+  const page = Math.max(
+    Number.parseInt(query.page, 10) || 1,
+    1
+  );
+
+  const limit = Math.min(
+    Math.max(
+      Number.parseInt(query.limit, 10) || 20,
+      1
+    ),
+    50
+  );
+
+  const skip = (page - 1) * limit;
+
+  return {
+    page,
+    limit,
+    skip,
+  };
+}
+
+/* =========================================================
+   GET PUBLIC NEWS
+========================================================= */
+
 const getNews = async (req, res) => {
   try {
-    const news = await News.find({ status: true }).sort({
-      publishedDate: -1
-    });
+    const {
+      category,
+      contentType,
+      featured,
+    } = req.query;
 
-    res.status(200).json(news);
-  } catch (error) {
-    res.status(500).json({
-      message: "Failed to fetch news",
-      error: error.message
-    });
-  }
-};
+    const {
+      page,
+      limit,
+      skip,
+    } = getPagination(req.query);
 
-// GET single news
-const getNewsBySlug = async (req, res) => {
-  try {
-    const news = await News.findOne({
-      slug: req.params.slug,
-      status: true
-    });
+    const query = {
+      ...publicQuery,
+    };
 
-    if (!news) {
-      return res.status(404).json({
-        message: "News article not found"
-      });
+    /* Category filter */
+    if (
+      category &&
+      category !== "All"
+    ) {
+      query.category =
+        String(category).trim();
     }
 
-    res.status(200).json(news);
-  } catch (error) {
-    res.status(500).json({
-      message: "Failed to fetch news article",
-      error: error.message
+    /* Content type filter */
+    if (
+      contentType &&
+      contentType !== "All"
+    ) {
+      query.contentType =
+        String(contentType).trim();
+    }
+
+    /* Featured filter */
+    if (featured === "true") {
+      query.featured = true;
+    }
+
+    const [
+      items,
+      total,
+    ] = await Promise.all([
+      Blog.find(query)
+        .sort({
+          featured: -1,
+          publishedAt: -1,
+          createdAt: -1,
+        })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+
+      Blog.countDocuments(query),
+    ]);
+
+    return res.status(200).json({
+      items,
+      page,
+      total,
+      totalPages: Math.max(
+        1,
+        Math.ceil(total / limit)
+      ),
     });
-  }
-};
-
-// CREATE news
-const createNews = async (req, res) => {
-  try {
-    const news = await News.create(req.body);
-
-    res.status(201).json(news);
   } catch (error) {
-    res.status(400).json({
-      message: "Failed to create news",
-      error: error.message
-    });
-  }
-};
-
-// UPDATE news
-const updateNews = async (req, res) => {
-  try {
-    const news = await News.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      {
-        new: true,
-        runValidators: true
-      }
+    console.error(
+      "News & Insights fetch error:",
+      error
     );
 
-    if (!news) {
-      return res.status(404).json({
-        message: "News article not found"
-      });
-    }
-
-    res.status(200).json(news);
-  } catch (error) {
-    res.status(400).json({
-      message: "Failed to update news",
-      error: error.message
+    return res.status(500).json({
+      error:
+        "Failed to fetch News & Insights.",
+      message: error.message,
     });
   }
 };
 
-// DELETE news
-const deleteNews = async (req, res) => {
+/* =========================================================
+   GET SINGLE NEWS
+   Supports:
+   /api/news/my-slug
+   /api/news/mongodb-id
+========================================================= */
+
+const getNewsBySlug = async (
+  req,
+  res
+) => {
   try {
-    const news = await News.findByIdAndDelete(req.params.id);
+    const identifier = String(
+      req.params.slug || ""
+    ).trim();
 
-    if (!news) {
-      return res.status(404).json({
-        message: "News article not found"
+    if (!identifier) {
+      return res.status(400).json({
+        error:
+          "News identifier is required.",
       });
     }
 
-    res.status(200).json({
-      message: "News article deleted successfully"
-    });
+    const identifierFilter =
+      mongoose.isValidObjectId(identifier)
+        ? {
+            _id: identifier,
+          }
+        : {
+            slug: identifier,
+          };
+
+    const news =
+      await Blog.findOne({
+        ...identifierFilter,
+        ...publicQuery,
+      }).lean();
+
+    if (!news) {
+      return res.status(404).json({
+        error:
+          "News article not found.",
+      });
+    }
+
+    return res.status(200).json(
+      news
+    );
   } catch (error) {
-    res.status(500).json({
-      message: "Failed to delete news",
-      error: error.message
+    console.error(
+      "News details fetch error:",
+      error
+    );
+
+    return res.status(500).json({
+      error:
+        "Failed to fetch News & Insights article.",
+      message: error.message,
     });
   }
 };
+
+/* =========================================================
+   EXPORT
+========================================================= */
 
 module.exports = {
   getNews,
   getNewsBySlug,
-  createNews,
-  updateNews,
-  deleteNews
 };

@@ -1,102 +1,195 @@
 const mongoose = require("mongoose");
 
+const instructorSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      default: "ProJenius Team",
+      trim: true,
+    },
+
+    avatar: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+  },
+  {
+    _id: false,
+  }
+);
+
 const courseSchema = new mongoose.Schema(
   {
+    /* =====================================================
+       BASIC COURSE INFORMATION
+    ===================================================== */
+
     title: {
       type: String,
       required: true,
-      trim: true
+      trim: true,
     },
 
     slug: {
       type: String,
       required: true,
       unique: true,
-      trim: true
-    },
-
-    shortDescription: {
-      type: String,
-      default: ""
+      index: true,
+      trim: true,
     },
 
     description: {
       type: String,
-      default: ""
+      required: true,
+      trim: true,
     },
 
     image: {
       type: String,
-      default: ""
+      required: true,
     },
 
     category: {
       type: String,
-      required: true
+      required: true,
+      trim: true,
+      index: true,
     },
 
-    badge: {
+    /* =====================================================
+       COURSE DETAILS
+    ===================================================== */
+
+    level: {
       type: String,
-      enum: ["", "Popular", "Bestseller", "New"],
-      default: ""
-    },
-
-    originalPrice: {
-      type: Number,
-      default: 0
-    },
-
-    offerPrice: {
-      type: Number,
-      default: 0
+      default: "Beginner",
+      trim: true,
+      index: true,
     },
 
     duration: {
       type: String,
-      default: ""
-    },
-
-    level: {
-      type: String,
-      default: ""
+      default: "",
+      trim: true,
     },
 
     mode: {
       type: String,
-      default: ""
+      default: "Online Live",
+      trim: true,
     },
 
     instructor: {
-      type: String,
-      default: ""
+      type: instructorSchema,
+      default: () => ({}),
     },
 
-    syllabus: [
-      {
-        type: String
-      }
-    ],
+    badge: {
+      type: String,
+      default: "",
+      trim: true,
+    },
 
-    features: [
-      {
-        type: String
-      }
-    ],
+    skills: {
+      type: [String],
+      default: [],
+    },
 
-    requirements: [
-      {
-        type: String
-      }
-    ],
+    tags: {
+      type: [String],
+      default: [],
+    },
+
+    /* =====================================================
+       PRICING
+    ===================================================== */
+
+    originalPrice: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    offerPrice: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    price: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    /* =====================================================
+       PUBLIC DISPLAY METRICS
+    ===================================================== */
+
+    rating: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 5,
+    },
+
+    reviews: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    enrolled: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    /* =====================================================
+       PUBLISHING
+    ===================================================== */
+
+    courseStatus: {
+      type: String,
+      enum: [
+        "Draft",
+        "Enrollment Open",
+        "Enrollment Closed",
+        "Ongoing",
+        "Completed",
+      ],
+      default: "Draft",
+      index: true,
+    },
+
+    publicVisibility: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+
+    published: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+
+    /* =====================================================
+       OLD FIELD
+       Kept only for compatibility with old data.
+    ===================================================== */
 
     status: {
       type: Boolean,
-      default: true
-    }
+      default: true,
+    },
   },
   {
-    timestamps: true
+    timestamps: true,
   }
 );
 
-module.exports = mongoose.model("Course", courseSchema);
+module.exports =
+  mongoose.models.Course ||
+  mongoose.model("Course", courseSchema);

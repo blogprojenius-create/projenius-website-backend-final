@@ -5,19 +5,25 @@ const {
   getCourseBySlug,
   createCourse,
   updateCourse,
-  deleteCourse
+  deleteCourse,
 } = require("../controllers/courseController");
 
-const router = express.Router();
+const router =
+  express.Router();
 
-router.get("/", getCourses);
+router.get(
+  "/",
+  getCourses
+);
 
-router.get("/:slug", getCourseBySlug);
+router.get(
+  "/:slug",
+  getCourseBySlug
+);
 
-router.post("/", createCourse);
-
-router.put("/:id", updateCourse);
-
-router.delete("/:id", deleteCourse);
+router.post(
+  "/",
+  createCourse
+);
 
 module.exports = router;

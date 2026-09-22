@@ -3,21 +3,27 @@ const express = require("express");
 const {
   getNews,
   getNewsBySlug,
-  createNews,
-  updateNews,
-  deleteNews
 } = require("../controllers/newsController");
 
-const router = express.Router();
+const router =
+  express.Router();
 
-router.get("/", getNews);
+/* =========================================================
+   PUBLIC NEWS LIST
+========================================================= */
 
-router.get("/:slug", getNewsBySlug);
+router.get(
+  "/",
+  getNews
+);
 
-router.post("/", createNews);
+/* =========================================================
+   PUBLIC NEWS DETAIL
+========================================================= */
 
-router.put("/:id", updateNews);
-
-router.delete("/:id", deleteNews);
+router.get(
+  "/:slug",
+  getNewsBySlug
+);
 
 module.exports = router;
