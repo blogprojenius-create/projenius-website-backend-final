@@ -1,78 +1,205 @@
 const express = require("express");
-const nodemailer = require("nodemailer");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
+const mongoose = require("mongoose");
+
+const Contact = require("../models/Contact");
+const { sendContactEmails } = require("../services/emailService");
 
 const router = express.Router();
 
-
 /* =========================================================
-   EMAIL CONFIGURATION
+   UPLOAD CONFIGURATION
+   Files are staged briefly on disk and then moved into
+   MongoDB GridFS. This avoids Render/local-disk persistence issues.
 ========================================================= */
 
-const MAIL_USER =
-    process.env.MAIL_USER ||
-    "teamprojenius@gmail.com";
+const uploadDir = path.join(__dirname, "..", "uploads", "contact-temp");
+fs.mkdirSync(uploadDir, { recursive: true });
 
-const MAIL_RECEIVER =
-    process.env.MAIL_RECEIVER ||
-    "teamprojenius@gmail.com";
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
 
-const MAIL_APP_PASSWORD =
-    process.env.MAIL_APP_PASSWORD;
+const ALLOWED_EXTENSIONS = new Set([
+    "pdf",
+    "doc",
+    "docx",
+    "ppt",
+    "pptx",
+    "png",
+    "jpg",
+    "jpeg",
+]);
 
+const ALLOWED_MIME_TYPES = new Set([
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "image/png",
+    "image/jpeg",
+]);
 
-/* =========================================================
-   EMAIL TRANSPORTER
-========================================================= */
+const storage = multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, uploadDir),
+    filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const unique = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}`;
+        cb(null, `${unique}${ext}`);
+    },
+});
 
-const transporter =
-    nodemailer.createTransport({
+const upload = multer({
+    storage,
+    limits: {
+        fileSize: MAX_FILE_SIZE,
+        files: 1,
+    },
+    fileFilter: (_req, file, cb) => {
+        const ext = path.extname(file.originalname).slice(1).toLowerCase();
+        const mimeOk = ALLOWED_MIME_TYPES.has(file.mimetype);
+        const extOk = ALLOWED_EXTENSIONS.has(ext);
 
-        service: "gmail",
-
-        auth: {
-            user: MAIL_USER,
-            pass: MAIL_APP_PASSWORD,
-        },
-
-    });
-
-
-/* =========================================================
-   VERIFY EMAIL SERVICE
-========================================================= */
-
-transporter.verify(
-    (error) => {
-
-        if (error) {
-
-            console.error(
-                "========================================"
+        if (!mimeOk || !extOk) {
+            return cb(
+                new Error(
+                    "Unsupported attachment type. Please upload PDF, DOC, DOCX, PPT, PPTX, PNG, JPG or JPEG."
+                )
             );
-
-            console.error(
-                "EMAIL SERVICE ERROR"
-            );
-
-            console.error(
-                error.message
-            );
-
-            console.error(
-                "========================================"
-            );
-
-        } else {
-
-            console.log(
-                "Email service is ready"
-            );
-
         }
 
-    }
-);
+        cb(null, true);
+    },
+});
 
+/* =========================================================
+   HELPERS
+========================================================= */
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+const cleanString = (value, fallback = "") =>
+    String(value ?? fallback).trim();
+
+function safeDate(value) {
+    if (!value) return new Date();
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+
+function prettyValue(value) {
+    if (Array.isArray(value)) return value.join(", ");
+    if (value && typeof value === "object") return JSON.stringify(value);
+    return cleanString(value);
+}
+
+function getGridFSBucket() {
+    if (!mongoose.connection.db) {
+        throw new Error("MongoDB is not connected. Cannot store attachment.");
+    }
+
+    return new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
+        bucketName: "contactAttachments",
+    });
+}
+
+function storeFileInGridFS(file) {
+    return new Promise((resolve, reject) => {
+        const bucket = getGridFSBucket();
+        const fileId = new mongoose.Types.ObjectId();
+        const source = fs.createReadStream(file.path);
+        const uploadStream = bucket.openUploadStreamWithId(fileId, file.originalname, {
+            contentType: file.mimetype,
+            metadata: {
+                originalName: file.originalname,
+                source: "website-contact-form",
+            },
+        });
+
+        source.on("error", reject);
+        uploadStream.on("error", reject);
+        uploadStream.on("finish", () => resolve(fileId));
+
+        source.pipe(uploadStream);
+    });
+}
+
+function removeTempFile(file) {
+    if (file?.path) fs.unlink(file.path, () => {});
+}
+
+function buildAttachmentUrl(fileId) {
+    if (!fileId) return "";
+
+    const baseUrl = cleanString(
+        process.env.PUBLIC_API_URL || process.env.PUBLIC_SITE_URL,
+        `http://localhost:${process.env.PORT || process.env.API_PORT || 5000}`
+    ).replace(/\/$/, "");
+
+    return `${baseUrl}/api/contact/attachments/${encodeURIComponent(String(fileId))}`;
+}
+
+const FIELD_LABELS = {
+    stage: "Current stage",
+    support: "Support needed",
+    build: "What they want to build",
+    product: "Product status",
+    timeline: "Expected timeline",
+    budget: "Budget range",
+    department: "Department",
+    topic: "Workshop topic / technology",
+    format: "Workshop format",
+    date: "Preferred date",
+    duration: "Duration",
+    participants: "Expected participants",
+    area: "Interested area / Area of interest",
+    level: "Current skill level",
+    mode: "Preferred learning mode",
+    education: "Current education / role",
+    skills: "Current skills",
+    preference: "Internship preference",
+    year: "Current year",
+    goal: "Career goal",
+    guidance: "Guidance needed",
+    role: "Role / designation",
+    enquiry: "Enquiry type",
+};
+
+function buildEmailParams({ payload, attachmentUrl }) {
+    const specific = payload.enquirySpecificFields || {};
+
+    const details = Object.entries(specific)
+        .filter(([, value]) => {
+            if (Array.isArray(value)) return value.length > 0;
+            return String(value ?? "").trim() !== "";
+        })
+        .map(([key, value]) => `${FIELD_LABELS[key] || key}: ${prettyValue(value)}`)
+        .join("\n");
+
+    const category = cleanString(payload.enquiryType) || "General";
+
+    return {
+        enquiry_type: category,
+        category,
+        enquiry_category: category,
+        source_page: cleanString(payload.sourcePage, "Website"),
+        name: cleanString(payload.name),
+        email: cleanString(payload.email).toLowerCase(),
+        phone: cleanString(payload.phone),
+        organisation: cleanString(payload.organisation),
+        city: cleanString(payload.city),
+        message: cleanString(payload.message),
+        specific_fields: details || "No additional category-specific details.",
+        attachment_name: payload.attachment?.name || "",
+        attachment_url: attachmentUrl || "",
+        attachment_available: Boolean(attachmentUrl),
+        submission_id: cleanString(payload.submissionId),
+        submitted_at: safeDate(payload.timestamp).toLocaleString("en-IN"),
+        subject: `${category} Enquiry - ${cleanString(payload.name)}`,
+    };
+}
 
 /* =========================================================
    POST /api/contact
@@ -80,690 +207,273 @@ transporter.verify(
 
 router.post(
     "/contact",
-    async (req, res) => {
+    (req, res, next) => {
+        upload.single("attachment")(req, res, (uploadError) => {
+            if (!uploadError) return next();
 
-        try {
-
-            /* =================================================
-               CHECK EMAIL CONFIGURATION
-            ================================================= */
-
-            if (!MAIL_APP_PASSWORD) {
-
-                console.error(
-                    "MAIL_APP_PASSWORD is missing in .env"
-                );
-
-                return res.status(500).json({
-                    success: false,
-                    message:
-                        "Email service is not configured correctly.",
-                });
-
+            if (uploadError instanceof multer.MulterError) {
+                if (uploadError.code === "LIMIT_FILE_SIZE") {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Attachment is too large. Maximum allowed size is 5 MB.",
+                    });
+                }
             }
 
+            return res.status(400).json({
+                success: false,
+                message: uploadError.message || "Unable to process the attachment.",
+            });
+        });
+    },
+    async (req, res) => {
+        let storedFileId = null;
 
-            /* =================================================
-               GET REQUEST DATA
-            ================================================= */
+        try {
+            let incoming = req.body;
+
+            if (typeof req.body?.payload === "string") {
+                try {
+                    incoming = JSON.parse(req.body.payload);
+                } catch {
+                    removeTempFile(req.file);
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid enquiry payload.",
+                    });
+                }
+            }
 
             const {
+                enquiryType,
+                sourcePage,
                 name,
                 email,
                 phone,
-                service,
+                organisation,
+                city,
                 message,
-            } = req.body;
+                enquirySpecificFields,
+                timestamp,
+                submissionId,
+            } = incoming || {};
 
-
-            /* =================================================
-               VALIDATION
-            ================================================= */
-
-            if (
-                !name ||
-                !email ||
-                !phone ||
-                !service ||
-                !message
-            ) {
-
+            if (!enquiryType || !name || !email || !phone || !message) {
+                removeTempFile(req.file);
                 return res.status(400).json({
                     success: false,
-                    message:
-                        "Please provide all required details.",
+                    message: "Please provide all required enquiry details.",
                 });
-
             }
 
+            const cleanEmail = cleanString(email).toLowerCase();
 
-            /* =================================================
-               CLEAN DATA
-            ================================================= */
-
-            const clientName =
-                String(name).trim();
-
-            const clientEmail =
-                String(email).trim();
-
-            const clientPhone =
-                String(phone).trim();
-
-            const clientService =
-                String(service).trim();
-
-            const clientMessage =
-                String(message).trim();
-
-
-            /* =================================================
-               EMAIL VALIDATION
-            ================================================= */
-
-            const emailRegex =
-                /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-            if (!emailRegex.test(clientEmail)) {
-
+            if (!EMAIL_REGEX.test(cleanEmail)) {
+                removeTempFile(req.file);
                 return res.status(400).json({
                     success: false,
-                    message:
-                        "Please provide a valid email address.",
+                    message: "Please provide a valid email address.",
                 });
-
             }
 
+            const cleanSubmissionId = cleanString(submissionId);
 
-            /* =================================================
-               LENGTH VALIDATION
-            ================================================= */
+            if (cleanSubmissionId) {
+                const existing = await Contact.findOne({
+                    submissionId: cleanSubmissionId,
+                }).lean();
 
-            if (clientName.length > 100) {
-
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Name is too long.",
-                });
-
+                if (existing) {
+                    removeTempFile(req.file);
+                    return res.status(200).json({
+                        success: true,
+                        duplicate: true,
+                        message: "This enquiry has already been submitted.",
+                        enquiryId: existing._id,
+                    });
+                }
             }
 
+            /* =====================================================
+               STORE FILE IN MONGODB GRIDFS
+            ===================================================== */
 
-            if (clientEmail.length > 150) {
+            let attachment = null;
+            let attachmentUrl = "";
 
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Email address is too long.",
-                });
+            if (req.file) {
+                storedFileId = await storeFileInGridFS(req.file);
+                removeTempFile(req.file);
 
+                attachmentUrl = buildAttachmentUrl(storedFileId);
+
+                attachment = {
+                    fileId: String(storedFileId),
+                    name: req.file.originalname,
+                    filename: req.file.originalname,
+                    type: req.file.mimetype,
+                    size: req.file.size,
+                    url: attachmentUrl,
+                    storage: "mongodb-gridfs",
+                };
             }
 
-
-            if (clientPhone.length > 30) {
-
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Phone number is too long.",
-                });
-
-            }
-
-
-            if (clientService.length > 150) {
-
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Service name is too long.",
-                });
-
-            }
-
-
-            if (clientMessage.length > 5000) {
-
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        "Project details are too long.",
-                });
-
-            }
-
-
-            /* =================================================
-               EMAIL TO PROJENIUS
-            ================================================= */
-
-            const adminMail = {
-
-                from:
-                    `"ProJenius Website" <${MAIL_USER}>`,
-
-                to:
-                    MAIL_RECEIVER,
-
-                replyTo:
-                    clientEmail,
-
-                subject:
-                    `New Project Enquiry - ${clientName}`,
-
-                text: `
-New Project Enquiry
-===================
-
-A new project enquiry has been submitted through the ProJenius website.
-
-CLIENT DETAILS
---------------
-
-Name:
-${clientName}
-
-Email:
-${clientEmail}
-
-Phone:
-${clientPhone}
-
-Service Interested In:
-${clientService}
-
-Project Details:
-${clientMessage}
-
-
-Reply directly to this email to contact the client.
-
-ProJenius
-Innovation Technology Private Limited
-Madurai, Tamil Nadu
-                `.trim(),
-
-                html: `
-<!DOCTYPE html>
-
-<html>
-
-<head>
-
-    <meta charset="UTF-8">
-
-    <title>
-        New Project Enquiry
-    </title>
-
-</head>
-
-<body
-    style="
-        margin:0;
-        padding:0;
-        background:#f4f6f8;
-        font-family:Arial,Helvetica,sans-serif;
-        color:#1a1a1a;
-    "
->
-
-    <div
-        style="
-            max-width:700px;
-            margin:30px auto;
-            background:#ffffff;
-            padding:35px;
-            border-radius:12px;
-        "
-    >
-
-        <h2
-            style="
-                margin:0 0 20px;
-                color:#0b1426;
-            "
-        >
-            New Project Enquiry
-        </h2>
-
-
-        <p>
-            A new project enquiry has been
-            submitted through the ProJenius website.
-        </p>
-
-
-        <hr
-            style="
-                border:0;
-                border-top:1px solid #e5e7eb;
-                margin:25px 0;
-            "
-        />
-
-
-        <h3
-            style="
-                color:#0b1426;
-            "
-        >
-            Client Details
-        </h3>
-
-
-        <p>
-            <strong>Name:</strong>
-            ${escapeHtml(clientName)}
-        </p>
-
-
-        <p>
-            <strong>Email:</strong>
-            ${escapeHtml(clientEmail)}
-        </p>
-
-
-        <p>
-            <strong>Phone:</strong>
-            ${escapeHtml(clientPhone)}
-        </p>
-
-
-        <p>
-            <strong>Service:</strong>
-            ${escapeHtml(clientService)}
-        </p>
-
-
-        <h3
-            style="
-                color:#0b1426;
-                margin-top:30px;
-            "
-        >
-            Project Details
-        </h3>
-
-
-        <div
-            style="
-                background:#f5f7fa;
-                padding:20px;
-                border-radius:8px;
-                line-height:1.7;
-                white-space:pre-wrap;
-            "
-        >
-            ${escapeHtml(clientMessage)}
-        </div>
-
-
-        <p
-            style="
-                margin-top:25px;
-                color:#68758a;
-                font-size:13px;
-            "
-        >
-            Reply directly to this email
-            to contact the client.
-        </p>
-
-
-        <hr
-            style="
-                border:0;
-                border-top:1px solid #e5e7eb;
-                margin:25px 0;
-            "
-        />
-
-
-        <p
-            style="
-                color:#68758a;
-                font-size:13px;
-            "
-        >
-            ProJenius<br />
-            Innovation Technology Private Limited<br />
-            Madurai, Tamil Nadu
-        </p>
-
-    </div>
-
-</body>
-
-</html>
-                `,
-
+            /* =====================================================
+               SAVE ENQUIRY
+            ===================================================== */
+
+            const cleanData = {
+                enquiryType: cleanString(enquiryType),
+                sourcePage: cleanString(sourcePage, "website"),
+                name: cleanString(name),
+                email: cleanEmail,
+                phone: cleanString(phone),
+                organisation: cleanString(organisation),
+                city: cleanString(city),
+                message: cleanString(message),
+                enquirySpecificFields:
+                    enquirySpecificFields && typeof enquirySpecificFields === "object"
+                        ? enquirySpecificFields
+                        : {},
+                attachment,
+                submittedAt: safeDate(timestamp),
+                submissionId: cleanSubmissionId || undefined,
             };
 
+            const enquiry = await Contact.create(cleanData);
 
-            /* =================================================
-               CONFIRMATION EMAIL TO CLIENT
-            ================================================= */
+            /* =====================================================
+               EMAILJS — TEXT/HTML ONLY
+               IMPORTANT: Free EmailJS cannot accept file attachments.
+               We send a secure GridFS link instead, so the request
+               stays below the EmailJS Free plan size restriction.
+            ===================================================== */
 
-            const clientMail = {
-
-                from:
-                    `"ProJenius Team" <${MAIL_USER}>`,
-
-                to:
-                    clientEmail,
-
-                subject:
-                    "We've Received Your Project Enquiry - ProJenius",
-
-                text: `
-Hi ${clientName},
-
-Thank you for contacting ProJenius.
-
-We've successfully received your project enquiry.
-
-SERVICE
-${clientService}
-
-PROJECT DETAILS
-${clientMessage}
-
-Our team will review your requirements and contact you shortly.
-
-We appreciate your interest in working with ProJenius.
-
-Regards,
-ProJenius Team
-Innovation Technology Private Limited
-Madurai, Tamil Nadu
-                `.trim(),
-
-                html: `
-<!DOCTYPE html>
-
-<html>
-
-<head>
-
-    <meta charset="UTF-8">
-
-    <title>
-        Thank You - ProJenius
-    </title>
-
-</head>
-
-<body
-    style="
-        margin:0;
-        padding:0;
-        background:#f4f6f8;
-        font-family:Arial,Helvetica,sans-serif;
-        color:#1a1a1a;
-    "
->
-
-    <div
-        style="
-            max-width:700px;
-            margin:30px auto;
-            background:#ffffff;
-            padding:35px;
-            border-radius:12px;
-        "
-    >
-
-        <h2
-            style="
-                margin:0 0 20px;
-                color:#0b1426;
-            "
-        >
-            Thank You for Contacting ProJenius!
-        </h2>
-
-
-        <p>
-            Hi ${escapeHtml(clientName)},
-        </p>
-
-
-        <p>
-            Thank you for reaching out to
-            <strong>ProJenius</strong>.
-        </p>
-
-
-        <p>
-            We've successfully received your
-            project enquiry.
-        </p>
-
-
-        <div
-            style="
-                margin:25px 0;
-                padding:20px;
-                background:#f5f7fa;
-                border-radius:8px;
-            "
-        >
-
-            <p>
-                <strong>
-                    Service:
-                </strong>
-
-                ${escapeHtml(clientService)}
-            </p>
-
-
-            <p>
-                <strong>
-                    Your Requirements:
-                </strong>
-            </p>
-
-
-            <p
-                style="
-                    line-height:1.7;
-                    white-space:pre-wrap;
-                "
-            >
-                ${escapeHtml(clientMessage)}
-            </p>
-
-        </div>
-
-
-        <p>
-            Our team will review your requirements
-            and contact you shortly with the next steps.
-        </p>
-
-
-        <p>
-            We appreciate your interest in
-            working with ProJenius.
-        </p>
-
-
-        <p
-            style="
-                margin-top:30px;
-            "
-        >
-            Regards,<br />
-
-            <strong>
-                ProJenius Team
-            </strong>
-        </p>
-
-
-        <p
-            style="
-                color:#68758a;
-                font-size:13px;
-            "
-        >
-            Innovation Technology Private Limited<br />
-            Madurai, Tamil Nadu
-        </p>
-
-    </div>
-
-</body>
-
-</html>
-                `,
-
+            let emailStatus = {
+                admin: false,
+                client: false,
             };
 
+            try {
+                const emailResult = await sendContactEmails({
+                    templateParams: buildEmailParams({
+                        payload: cleanData,
+                        attachmentUrl,
+                    }),
+                });
 
-            /* =================================================
-               SEND ADMIN EMAIL
-            ================================================= */
+                emailStatus = {
+                    admin: Boolean(emailResult.admin?.success),
+                    client: Boolean(emailResult.client?.success),
+                };
+            } catch (emailError) {
+                console.error("CONTACT EMAIL ERROR:", emailError?.message || emailError);
+            }
 
-            console.log(
-                `Sending enquiry email to ${MAIL_RECEIVER}...`
-            );
-
-            await transporter.sendMail(
-                adminMail
-            );
-
-            console.log(
-                "Admin email sent successfully."
-            );
-
-
-            /* =================================================
-               SEND CLIENT EMAIL
-            ================================================= */
-
-            console.log(
-                `Sending confirmation email to ${clientEmail}...`
-            );
-
-            await transporter.sendMail(
-                clientMail
-            );
-
-            console.log(
-                "Client confirmation email sent successfully."
-            );
-
-
-            /* =================================================
-               SUCCESS RESPONSE
-            ================================================= */
-
-            return res.status(200).json({
-
+            return res.status(201).json({
                 success: true,
-
-                message:
-                    "Your enquiry has been submitted successfully. A confirmation email has been sent to your inbox.",
-
+                message: "Enquiry submitted successfully.",
+                enquiryId: enquiry._id,
+                emailStatus,
+                attachment: attachment
+                    ? {
+                          name: attachment.name,
+                          url: attachment.url,
+                      }
+                    : null,
             });
-
-
         } catch (error) {
+            console.error("========================================");
+            console.error("CONTACT ROUTE ERROR");
+            console.error(error?.stack || error?.message || error);
+            console.error("========================================");
 
-            /* =================================================
-               EMAIL ERROR
-            ================================================= */
+            removeTempFile(req.file);
 
-            console.error(
-                "========================================"
-            );
-
-            console.error(
-                "CONTACT EMAIL ERROR"
-            );
-
-            console.error(
-                "Name:",
-                error.name
-            );
-
-            console.error(
-                "Message:",
-                error.message
-            );
-
-            console.error(
-                "Code:",
-                error.code
-            );
-
-            console.error(
-                "Command:",
-                error.command
-            );
-
-            console.error(
-                "========================================"
-            );
-
+            /* If GridFS succeeded but the enquiry could not be created,
+               remove the orphaned GridFS file. */
+            if (storedFileId && mongoose.connection.db) {
+                try {
+                    const bucket = getGridFSBucket();
+                    await bucket.delete(new mongoose.Types.ObjectId(storedFileId));
+                } catch (cleanupError) {
+                    console.error("GRIDFS CLEANUP ERROR:", cleanupError?.message || cleanupError);
+                }
+            }
 
             return res.status(500).json({
-
                 success: false,
-
-                message:
-                    "Unable to send your enquiry right now. Please try again later.",
-
+                message: "Unable to submit your enquiry right now. Please try again later.",
             });
-
         }
-
     }
 );
 
-
 /* =========================================================
-   HTML ESCAPE
+   GET /api/contact/attachments/:fileId
+   Streams the stored GridFS file.
 ========================================================= */
 
-function escapeHtml(value) {
+router.get("/contact/attachments/:fileId", async (req, res) => {
+    try {
+        if (!mongoose.isValidObjectId(req.params.fileId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid attachment ID.",
+            });
+        }
 
-    return String(value)
+        const fileId = new mongoose.Types.ObjectId(req.params.fileId);
+        const bucket = getGridFSBucket();
+        const files = await bucket.find({ _id: fileId }).toArray();
 
-        .replace(
-            /&/g,
-            "&amp;"
-        )
+        if (!files.length) {
+            return res.status(404).json({
+                success: false,
+                message: "Attachment not found.",
+            });
+        }
 
-        .replace(
-            /</g,
-            "&lt;"
-        )
+        const file = files[0];
 
-        .replace(
-            />/g,
-            "&gt;"
-        )
-
-        .replace(
-            /"/g,
-            "&quot;"
-        )
-
-        .replace(
-            /'/g,
-            "&#039;"
+        res.setHeader("Content-Type", file.contentType || "application/octet-stream");
+        res.setHeader(
+            "Content-Disposition",
+            `inline; filename="${String(file.filename).replace(/"/g, "")}"`
         );
+        res.setHeader("Cache-Control", "private, max-age=3600");
 
-}
+        const stream = bucket.openDownloadStream(fileId);
+        stream.on("error", () => {
+            if (!res.headersSent) {
+                res.status(500).json({
+                    success: false,
+                    message: "Unable to read the attachment.",
+                });
+            } else {
+                res.end();
+            }
+        });
 
+        stream.pipe(res);
+    } catch (error) {
+        console.error("ATTACHMENT DOWNLOAD ERROR:", error?.message || error);
+        return res.status(500).json({
+            success: false,
+            message: "Unable to open the attachment.",
+        });
+    }
+});
 
 /* =========================================================
-   EXPORT
+   GET /api/contact
 ========================================================= */
+
+router.get("/contact", (_req, res) => {
+    res.status(200).json({
+        success: true,
+        message: "Contact API is available. Use POST /api/contact to submit an enquiry.",
+    });
+});
 
 module.exports = router;

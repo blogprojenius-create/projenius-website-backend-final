@@ -15,66 +15,112 @@ const googleReviewRoutes = require("./routes/googleReviewRoutes");
 const app = express();
 
 /* =========================================================
-   CONFIG
+   PORT
 ========================================================= */
 
 const PORT = Number(
-    process.env.PORT ||
+  process.env.PORT ||
     process.env.API_PORT ||
     5000
 );
-
-const CLIENT_ORIGIN =
-    process.env.CLIENT_ORIGIN ||
-    process.env.FRONTEND_URL ||
-    "http://localhost:5173";
 
 /* =========================================================
    CORS
 ========================================================= */
 
-const allowedOrigins = CLIENT_ORIGIN
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+const defaultOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://localhost:5181",
+
+  "https://projenius-website-frontend-final.vercel.app",
+
+  "https://projenius-admin-frontend-final.vercel.app",
+];
+
+const envOrigins = String(
+  process.env.CLIENT_ORIGIN ||
+    process.env.FRONTEND_URL ||
+    ""
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [
+  ...new Set([
+    ...defaultOrigins,
+    ...envOrigins,
+  ]),
+];
 
 app.use(
-    cors({
-        origin(origin, callback) {
-            if (!origin) {
-                return callback(null, true);
-            }
+  cors({
+    origin(origin, callback) {
+      if (!origin) {
+        return callback(null, true);
+      }
 
-            if (allowedOrigins.includes(origin)) {
-                return callback(null, true);
-            }
+      if (
+        allowedOrigins.includes(origin)
+      ) {
+        return callback(null, true);
+      }
 
-            /*
-             * Allow local development origins.
-             */
-            if (
-                origin.includes("localhost") ||
-                origin.includes("127.0.0.1")
-            ) {
-                return callback(null, true);
-            }
+      if (
+        /^https?:\/\/localhost:\d+$/.test(
+          origin
+        )
+      ) {
+        return callback(null, true);
+      }
 
-            /*
-             * Allow Vercel frontend.
-             */
-            if (origin.endsWith(".vercel.app")) {
-                return callback(null, true);
-            }
+      if (
+        /^https?:\/\/127\.0\.0\.1:\d+$/.test(
+          origin
+        )
+      ) {
+        return callback(null, true);
+      }
 
-            return callback(
-                new Error(
-                    `CORS blocked origin: ${origin}`
-                )
-            );
-        },
+      if (
+        origin.endsWith(".vercel.app")
+      ) {
+        return callback(null, true);
+      }
 
-        credentials: true,
-    })
+      console.warn(
+        `CORS blocked origin: ${origin}`
+      );
+
+      return callback(
+        new Error(
+          `CORS blocked origin: ${origin}`
+        )
+      );
+    },
+
+    credentials: true,
+
+    methods: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ],
+
+    allowedHeaders: [
+      "Origin",
+      "X-Requested-With",
+      "Content-Type",
+      "Accept",
+      "Authorization",
+    ],
+
+    optionsSuccessStatus: 204,
+  })
 );
 
 /* =========================================================
@@ -82,16 +128,18 @@ app.use(
 ========================================================= */
 
 app.use(
-    express.json({
-        limit: "20mb",
-    })
+  express.json({
+    limit:
+      process.env.API_JSON_LIMIT ||
+      "20mb",
+  })
 );
 
 app.use(
-    express.urlencoded({
-        extended: true,
-        limit: "20mb",
-    })
+  express.urlencoded({
+    extended: true,
+    limit: "20mb",
+  })
 );
 
 /* =========================================================
@@ -99,52 +147,73 @@ app.use(
 ========================================================= */
 
 app.use(
-    "/uploads",
-    express.static(
-        path.join(__dirname, "uploads")
-    )
+  "/uploads",
+  express.static(
+    path.join(__dirname, "uploads"),
+    {
+      maxAge: "1d",
+    }
+  )
 );
+
+/* =========================================================
+   ROOT
+========================================================= */
+
+app.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message:
+      "Projenius backend is running",
+  });
+});
 
 /* =========================================================
    HEALTH
 ========================================================= */
 
-app.get("/", (_req, res) => {
-    res.status(200).json({
-        success: true,
-        message: "Projenius backend is running",
-    });
-});
-
-app.get("/api/health", (_req, res) => {
-    res.status(200).json({
-        success: true,
-        message: "Projenius API is healthy",
-    });
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message:
+      "Projenius API is healthy",
+  });
 });
 
 /* =========================================================
-   API ROUTES
+   COURSES
 ========================================================= */
 
 app.use(
-    "/api/courses",
-    courseRoutes
+  "/api/courses",
+  courseRoutes
 );
 
-app.use(
-    "/api/news",
-    newsRoutes
-);
+/* =========================================================
+   NEWS
+========================================================= */
 
 app.use(
-    "/api",
-    contactRoutes
+  "/api/news",
+  newsRoutes
 );
 
+/* =========================================================
+   CONTACT
+========================================================= */
+
 app.use(
-    "/api/reviews",
-    googleReviewRoutes
+  "/api",
+  contactRoutes
+);
+
+/* =========================================================
+   GOOGLE REVIEWS
+========================================================= */
+
+app.use(
+  "/api/reviews",
+  googleReviewRoutes
 );
 
 /* =========================================================
@@ -152,12 +221,12 @@ app.use(
 ========================================================= */
 
 app.use((req, res) => {
-    res.status(404).json({
-        success: false,
-        message: "Route not found",
-        path: req.originalUrl,
-        method: req.method,
-    });
+  res.status(404).json({
+    success: false,
+    message: "Route not found",
+    path: req.originalUrl,
+    method: req.method,
+  });
 });
 
 /* =========================================================
@@ -165,81 +234,129 @@ app.use((req, res) => {
 ========================================================= */
 
 app.use(
-    (
-        err,
-        _req,
-        res,
-        _next
-    ) => {
-        console.error(
-            "Backend Error:",
-            err?.stack || err?.message || err
-        );
+  (
+    err,
+    req,
+    res,
+    next
+  ) => {
+    console.error(
+      "========================================"
+    );
 
-        res.status(
-            err?.status || 500
-        ).json({
-            success: false,
-            message:
-                err?.message ||
-                "Internal server error",
-        });
-    }
+    console.error(
+      "Backend Error:"
+    );
+
+    console.error(
+      err?.stack ||
+        err?.message ||
+        err
+    );
+
+    console.error(
+      "========================================"
+    );
+
+    res.status(
+      err?.status || 500
+    ).json({
+      success: false,
+      message:
+        err?.message ||
+        "Internal server error",
+    });
+  }
 );
 
 /* =========================================================
-   START
+   START SERVER
 ========================================================= */
 
 async function startServer() {
-    try {
-        await connectDB();
+  try {
+    await connectDB();
+
+    console.log(
+      "========================================"
+    );
+
+    console.log(
+      "MongoDB connected successfully"
+    );
+
+    console.log(
+      "Allowed CORS origins:"
+    );
+
+    allowedOrigins.forEach(
+      (origin) => {
+        console.log(` - ${origin}`);
+      }
+    );
+
+    app.listen(
+      PORT,
+      "0.0.0.0",
+      () => {
+        console.log(
+          "========================================"
+        );
 
         console.log(
-            "MongoDB connected successfully"
+          "Projenius Backend Started"
         );
 
-        app.listen(PORT, "0.0.0.0", () => {
-            console.log(
-                "========================================"
-            );
-
-            console.log(
-                "Projenius Backend Started"
-            );
-
-            console.log(
-                `Server running on port ${PORT}`
-            );
-
-            console.log(
-                `Health: /api/health`
-            );
-
-            console.log(
-                `Courses: /api/courses`
-            );
-
-            console.log(
-                `News: /api/news`
-            );
-
-            console.log(
-                `Reviews: /api/reviews`
-            );
-
-            console.log(
-                "========================================"
-            );
-        });
-    } catch (error) {
-        console.error(
-            "Backend startup failed:",
-            error
+        console.log(
+          `Server: http://localhost:${PORT}`
         );
 
-        process.exit(1);
-    }
+        console.log(
+          `Health: http://localhost:${PORT}/api/health`
+        );
+
+        console.log(
+          `Contact: http://localhost:${PORT}/api/contact`
+        );
+
+        console.log(
+          `Courses: http://localhost:${PORT}/api/courses`
+        );
+
+        console.log(
+          `News: http://localhost:${PORT}/api/news`
+        );
+
+        console.log(
+          `Reviews: http://localhost:${PORT}/api/reviews`
+        );
+
+        console.log(
+          "========================================"
+        );
+      }
+    );
+  } catch (error) {
+    console.error(
+      "========================================"
+    );
+
+    console.error(
+      "Backend startup failed:"
+    );
+
+    console.error(
+      error?.stack ||
+        error?.message ||
+        error
+    );
+
+    console.error(
+      "========================================"
+    );
+
+    process.exit(1);
+  }
 }
 
 startServer();
